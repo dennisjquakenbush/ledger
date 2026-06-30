@@ -63,7 +63,7 @@
   .hero .bal{font-size:42px;font-weight:800;letter-spacing:-1.4px;margin-top:5px}
   .hero-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
   .stat{background:rgba(0,0,0,.22);border:1px solid rgba(255,255,255,.04);border-radius:var(--r2);padding:12px 13px}
-  .stat .s-lbl{font-size:11px;color:var(--fog);display:flex;align-items:center;gap:7px;font-weight:700;text-transform:uppercase;letter-spacing:.6px}
+  .stat .s-lbl{font-size:11px;color:var(--fog);display:flex;align-items:center;gap:7px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;white-space:nowrap}
   .stat .s-val{font-size:21px;font-weight:800;margin-top:5px;letter-spacing:-.5px}
   .pos{color:var(--pine-2)} .neg{color:var(--clay)}
   .tick{width:9px;height:9px;border-radius:2px;display:inline-block}
@@ -90,6 +90,7 @@
   .pill.alloc{background:var(--bronze-d);color:var(--bronze)}
   .pill.warn{background:var(--clay-d);color:var(--clay)}
   .pill.ok{background:var(--pine-d);color:var(--pine-2)}
+  .pill.invest{background:#1d2e2a;color:#8fc0b0}
 
   /* GOALS */
   .goal{background:var(--card2);border:1px solid var(--line);border-radius:var(--r2);padding:15px;margin-bottom:11px}
@@ -352,7 +353,8 @@ const ICONS={
   gear:'<circle cx="12" cy="12" r="3.2"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.4 1a7 7 0 0 0-2-1.2l-.3-2.6H9.8l-.3 2.6a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.5a7 7 0 0 0 0 2.4l-2 1.5 2 3.4 2.4-1a7 7 0 0 0 2 1.2l.3 2.6h4.4l.3-2.6a7 7 0 0 0 2-1.2l2.4 1 2-3.4-2-1.5c.1-.4.1-.8.1-1.2z"/>',
   download:'<path d="M12 3v12M7 11l5 5 5-5M5 20h14"/>',
   arrowdown:'<path d="M12 5v14M6 13l6 6 6-6"/>',
-  arrowup:'<path d="M12 19V5M6 11l6-6 6 6"/>'
+  arrowup:'<path d="M12 19V5M6 11l6-6 6 6"/>',
+  swap:'<path d="M7 4 3.5 7.5 7 11"/><path d="M3.5 7.5H16a4 4 0 0 1 4 4"/><path d="M17 20l3.5-3.5L17 13"/><path d="M20.5 16.5H8a4 4 0 0 1-4-4"/>'
 };
 function svgIc(name,cls){return `<svg class="ic ${cls||''}" viewBox="0 0 24 24">${ICONS[name]||ICONS.box}</svg>`;}
 
@@ -367,7 +369,7 @@ const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 const DEFAULT_FUNDS=[
   {id:'tithe',      name:'Tithe',           alloc:0.10, icon:'heart',    color:'#c08a4e', target:0},
   {id:'emergency',  name:'Emergency',       alloc:0.18, icon:'shield',   color:'#6a9b4f', target:750},
-  {id:'investments',name:'Investments',     alloc:0.30, icon:'trending', color:'#7a9e8e', target:0},
+  {id:'investments',name:'Investments',     alloc:0.30, icon:'trending', color:'#7a9e8e', target:0, invest:true},
   {id:'car',        name:'Car Fund',        alloc:0.15, icon:'car',      color:'#9c7b4e', target:1000},
   {id:'spending',   name:'Spending',        alloc:0.14, icon:'cart',     color:'#c2785a', target:0},
   {id:'gifts',      name:'Gifts',           alloc:0.05, icon:'gift',     color:'#a86d52', target:0},
@@ -377,13 +379,14 @@ const DEFAULT_FUNDS=[
 let db=load();
 function load(){
   try{const raw=localStorage.getItem(KEY); if(raw){const d=JSON.parse(raw); if(d.funds){migrate(d);return d;}}}catch(e){}
-  return {funds:structuredClone(DEFAULT_FUNDS), income:[], tx:[]};
+  return {funds:structuredClone(DEFAULT_FUNDS), income:[], tx:[], transfers:[]};
 }
-// Older income may predate frozen splits — snapshot it from current allocations once.
 function migrate(d){
+  // Older income may predate frozen splits — snapshot it from current allocations once.
   (d.income||[]).forEach(r=>{
     if(!r.split){r.split={}; (d.funds||[]).forEach(f=>{r.split[f.id]=r.amount*(f.alloc||0);});}
   });
+  if(!d.transfers) d.transfers=[];           // transfers added later
 }
 function save(){localStorage.setItem(KEY,JSON.stringify(db));}
 
@@ -396,7 +399,12 @@ function totalSpent(){return db.tx.reduce((s,r)=>s+r.amount,0);}
 // Allocated = sum of each past deposit's FROZEN split to this fund (not affected by % changes).
 function allocated(f){return db.income.reduce((s,r)=>s+((r.split&&r.split[f.id]!=null)?r.split[f.id]:0),0);}
 function spentOf(id){return db.tx.filter(t=>t.fundId===id).reduce((s,t)=>s+t.amount,0);}
-function balanceOf(f){return allocated(f)-spentOf(f.id);}
+function xferIn(id){return (db.transfers||[]).filter(t=>t.toId===id).reduce((s,t)=>s+t.amount,0);}
+function xferOut(id){return (db.transfers||[]).filter(t=>t.fromId===id).reduce((s,t)=>s+t.amount,0);}
+// Balance = money put in (frozen allocations) + transfers in − spending − transfers out.
+function balanceOf(f){return allocated(f)-spentOf(f.id)+xferIn(f.id)-xferOut(f.id);}
+// For an investment fund, "invested" = everything you've actually deployed (purchases recorded as spending).
+function investedOf(id){return spentOf(id);}
 function totalBalance(){return totalIncome()-totalSpent();}
 function allocTotal(){return db.funds.reduce((s,f)=>s+(f.alloc||0),0);}
 
@@ -417,9 +425,8 @@ function renderDash(){
   const sp=db.tx.filter(r=>inPeriod(r.date)).reduce((s,r)=>s+r.amount,0);
   document.getElementById('statIncome').textContent=fmt0(inc);
   document.getElementById('statSpend').textContent=fmt0(sp);
-  const plabel = period==='all'?'total':period==='month'?'this month':'this week';
-  document.getElementById('incLbl').textContent='Income · '+plabel;
-  document.getElementById('spLbl').textContent='Spending · '+plabel;
+  document.getElementById('incLbl').textContent='Income';
+  document.getElementById('spLbl').textContent='Spending';
 
   // funds
   const wrap=document.getElementById('fundsList');
@@ -438,8 +445,10 @@ function renderDash(){
         </div>
         <div class="bar"><i style="width:${over?100:pct}%;background:${barCol}"></i></div>
         <div class="fund-sub">
-          <span>${Math.round((f.alloc||0)*100)}% · ${fmt0(sp)} spent of ${fmt0(alc)}</span>
-          ${over?'<span class="pill over">Overspent</span>':(f.target>0?'<span class="pill alloc">Goal</span>':'')}
+          <span>${f.invest
+            ? Math.round((f.alloc||0)*100)+'% · '+fmt0(investedOf(f.id))+' invested'
+            : Math.round((f.alloc||0)*100)+'% · '+fmt0(sp)+' spent of '+fmt0(alc)}</span>
+          ${over?'<span class="pill over">Overspent</span>':(f.invest?'<span class="pill invest">Invest</span>':(f.target>0?'<span class="pill alloc">Goal</span>':''))}
         </div>
       </div>
     </div>`;
@@ -495,7 +504,8 @@ function renderTx(){
   const list=document.getElementById('txList');
   let items=[
     ...db.income.map(r=>({...r,kind:'income'})),
-    ...db.tx.map(r=>({...r,kind:'spending'}))
+    ...db.tx.map(r=>({...r,kind:'spending'})),
+    ...(db.transfers||[]).map(r=>({...r,kind:'transfer'}))
   ];
   if(txFilter!=='all') items=items.filter(t=>t.kind===txFilter);
   items.sort((a,b)=> a.date<b.date?1:a.date>b.date?-1:((a._o||0)<(b._o||0)?1:-1));
@@ -508,11 +518,17 @@ function renderTx(){
         <div class="ico" style="background:var(--pine-d);color:var(--pine-2)">${svgIc('arrowdown')}</div>
         <div class="tx-mid"><div class="tx-t">${esc(t.source||'Income')}</div><div class="tx-s">Split across funds</div></div>
         <div class="tx-amt pos tnum">+${fmt(t.amount)}</div></div>`;
+    }else if(t.kind==='transfer'){
+      const a=fund(t.fromId)||{name:'Deleted'}, b=fund(t.toId)||{name:'Deleted'};
+      html+=`<div class="tx" onclick="openTransfer('${t.id}')">
+        <div class="ico" style="background:var(--card2);color:var(--fog)">${svgIc('swap')}</div>
+        <div class="tx-mid"><div class="tx-t">${esc(a.name)} → ${esc(b.name)}</div><div class="tx-s">${t.note?esc(t.note):'Transfer'}</div></div>
+        <div class="tx-amt tnum" style="color:var(--fog)">${fmt(t.amount)}</div></div>`;
     }else{
       const f=fund(t.fundId)||{name:'Deleted',icon:'box',color:'#888'};
       html+=`<div class="tx" onclick="openSpend('${t.id}')">
         <div class="ico" style="background:${f.color}1f;color:${f.color}">${svgIc(f.icon)}</div>
-        <div class="tx-mid"><div class="tx-t">${esc(t.desc||f.name)}</div><div class="tx-s">${esc(f.name)}</div></div>
+        <div class="tx-mid"><div class="tx-t">${esc(t.desc||f.name)}</div><div class="tx-s">${esc(f.name)}${f.invest?' · investment':''}</div></div>
         <div class="tx-amt tnum">−${fmt(t.amount)}</div></div>`;
     }
   });
@@ -566,14 +582,63 @@ function go(v){
 function openAdd(){
   const sh=document.getElementById('sheet');
   sh.innerHTML=`<div class="grab"></div><h2>Add</h2>
-    <div class="seg" style="margin-bottom:6px">
-      <button class="btn btn-block" style="flex-direction:column;gap:9px;padding:20px 10px" onclick="openIncome()">
-        <span style="width:30px;height:30px;color:var(--pine-2)">${svgIc('arrowdown')}</span><b>Income</b><small class="faint" style="font-weight:600">I got paid</small></button>
-      <button class="btn btn-block" style="flex-direction:column;gap:9px;padding:20px 10px" onclick="openSpend()">
-        <span style="width:30px;height:30px;color:var(--clay)">${svgIc('arrowup')}</span><b>Spending</b><small class="faint" style="font-weight:600">I spent money</small></button>
-    </div>`;
+    <div class="seg" style="margin-bottom:10px">
+      <button class="btn btn-block" style="flex-direction:column;gap:9px;padding:18px 10px" onclick="openIncome()">
+        <span style="width:28px;height:28px;color:var(--pine-2)">${svgIc('arrowdown')}</span><b>Income</b><small class="faint" style="font-weight:600">I got paid</small></button>
+      <button class="btn btn-block" style="flex-direction:column;gap:9px;padding:18px 10px" onclick="openSpend()">
+        <span style="width:28px;height:28px;color:var(--clay)">${svgIc('arrowup')}</span><b>Spending</b><small class="faint" style="font-weight:600">I spent money</small></button>
+    </div>
+    <button class="btn btn-block" style="gap:10px;padding:16px" onclick="openTransfer()">
+      <span style="width:22px;height:22px;color:var(--fog)">${svgIc('swap')}</span><b>Transfer between funds</b></button>`;
   openSheet();
 }
+
+/* ===================== TRANSFER ===================== */
+let xFrom='', xTo='';
+function openTransfer(id){
+  const ed=(db.transfers||[]).find(t=>t.id===id);
+  const fs=db.funds;
+  const r=ed||{fromId:(fs.find(f=>f.id==='spending')||fs[0]||{}).id, toId:(fs.find(f=>f.id==='emergency')||fs[1]||fs[0]||{}).id, amount:'', date:todayISO(), note:''};
+  if(r.fromId===r.toId && fs.length>1) r.toId=fs.find(f=>f.id!==r.fromId).id;
+  xFrom=r.fromId; xTo=r.toId;
+  const sh=document.getElementById('sheet');
+  sh.innerHTML=`<div class="grab"></div><h2>${ed?'Edit transfer':'Transfer'}</h2>
+    <div class="field"><input class="amount-in" id="xAmt" inputmode="decimal" placeholder="$0.00" value="${r.amount!==''?r.amount:''}" oninput="renderXfer()"></div>
+    <div class="field"><label>From</label><div class="fundpick" id="xFromPick"></div></div>
+    <div style="text-align:center;color:var(--fog);margin:-4px 0 12px"><span style="display:inline-block;width:22px;height:22px">${svgIc('arrowdown')}</span></div>
+    <div class="field"><label>To</label><div class="fundpick" id="xToPick"></div></div>
+    <div class="row2">
+      <div class="field"><label>Date</label><input type="date" id="xDate" value="${r.date}"></div>
+      <div class="field"><label>Note (optional)</label><input id="xNote" placeholder="e.g. Extra to savings" value="${esc(r.note||'')}"></div>
+    </div>
+    <div class="note" id="xHint" style="margin-bottom:12px;font-size:12px"></div>
+    <button class="btn btn-pri btn-block" onclick="saveTransfer('${ed?id:''}')">${ed?'Save changes':'Transfer'}</button>
+    ${ed?`<button class="btn btn-danger btn-block" onclick="deleteTransfer('${id}')" style="margin-top:10px">Delete</button>`:''}`;
+  renderXfer(); openSheet();
+  if(!ed) setTimeout(()=>document.getElementById('xAmt').focus(),300);
+}
+function renderXfer(){
+  const tile=(f,sel,side)=>`<button class="fp ${f.id===sel?'on':''}" onclick="x${side}='${f.id}';renderXfer()">
+     <span class="fpi" style="color:${f.color}">${svgIc(f.icon)}</span>${esc(f.name)}<small class="tnum">${fmt0(balanceOf(f))}</small></button>`;
+  document.getElementById('xFromPick').innerHTML=db.funds.map(f=>tile(f,xFrom,'From')).join('');
+  document.getElementById('xToPick').innerHTML=db.funds.map(f=>tile(f,xTo,'To')).join('');
+  const amt=parseFloat(String(document.getElementById('xAmt').value).replace(/[^0-9.]/g,''))||0;
+  const fromF=fund(xFrom); const hint=document.getElementById('xHint');
+  if(xFrom===xTo){hint.innerHTML='Pick two different funds.';}
+  else if(fromF && amt>balanceOf(fromF)+0.005){hint.innerHTML=`Note: ${esc(fromF.name)} only has ${fmt0(balanceOf(fromF))} — this will overdraw it.`;}
+  else hint.innerHTML='Moves money between envelopes. Your total balance doesn’t change.';
+}
+function saveTransfer(id){
+  const amt=parseFloat(String(document.getElementById('xAmt').value).replace(/[^0-9.]/g,''));
+  if(!amt||amt<=0){toast('Enter an amount');return;}
+  if(xFrom===xTo){toast('Pick two different funds');return;}
+  const date=document.getElementById('xDate').value||todayISO();
+  const note=document.getElementById('xNote').value.trim();
+  if(id){Object.assign(db.transfers.find(t=>t.id===id),{amount:amt,fromId:xFrom,toId:xTo,date,note});}
+  else{(db.transfers=db.transfers||[]).push({id:uid(),amount:amt,fromId:xFrom,toId:xTo,date,note,_o:Date.now()});}
+  save();render();closeSheet();toast(id?'Updated':'Transferred '+fmt0(amt));
+}
+function deleteTransfer(id){db.transfers=db.transfers.filter(t=>t.id!==id);save();render();closeSheet();toast('Deleted');}
 
 /* ===================== INCOME ===================== */
 // Proportions used for the split preview: current allocations for new income,
@@ -633,23 +698,30 @@ function openSpend(id){
   const r=ed||{fundId:(db.funds.find(f=>f.id==='spending')||db.funds[0]||{}).id,amount:'',desc:'',date:todayISO()};
   pickFund=r.fundId;
   const sh=document.getElementById('sheet');
-  sh.innerHTML=`<div class="grab"></div><h2>${ed?'Edit spending':'Add spending'}</h2>
+  sh.innerHTML=`<div class="grab"></div><h2 id="sTitle">${ed?'Edit spending':'Add spending'}</h2>
     <div class="field"><input class="amount-in" id="sAmt" inputmode="decimal" placeholder="$0.00" value="${r.amount!==''?r.amount:''}"></div>
-    <div class="field"><label>From which fund</label><div class="fundpick" id="sFundPick"></div></div>
+    <div class="field"><label id="sFundLbl">From which fund</label><div class="fundpick" id="sFundPick"></div></div>
     <div class="row2">
       <div class="field"><label>Date</label><input type="date" id="sDate" value="${r.date}"></div>
-      <div class="field"><label>Description</label><input id="sDesc" placeholder="e.g. Gas" value="${esc(r.desc||'')}"></div>
+      <div class="field"><label id="sDescLbl">Description</label><input id="sDesc" placeholder="e.g. Gas" value="${esc(r.desc||'')}"></div>
     </div>
-    <button class="btn btn-pri btn-block" onclick="saveSpend('${ed?id:''}')">${ed?'Save changes':'Add spending'}</button>
+    <button class="btn btn-pri btn-block" id="sSave" onclick="saveSpend('${ed?id:''}')">${ed?'Save changes':'Add spending'}</button>
     ${ed?`<button class="btn btn-danger btn-block" onclick="deleteSpend('${id}')" style="margin-top:10px">Delete</button>`:''}`;
-  renderFundPick(); openSheet();
+  renderFundPick(true); openSheet();
   if(!ed) setTimeout(()=>document.getElementById('sAmt').focus(),300);
 }
-function renderFundPick(){
+function renderFundPick(isNew){
   document.getElementById('sFundPick').innerHTML=db.funds.map(f=>
-    `<button class="fp ${f.id===pickFund?'on':''}" onclick="pickFund='${f.id}';renderFundPick()" style="${f.id===pickFund?'':''}">
+    `<button class="fp ${f.id===pickFund?'on':''}" onclick="pickFund='${f.id}';renderFundPick()">
        <span class="fpi" style="color:${f.color}">${svgIc(f.icon)}</span>${esc(f.name)}
        <small class="tnum">${fmt0(balanceOf(f))}</small></button>`).join('');
+  // Relabel for investment funds
+  const f=fund(pickFund), inv=f&&f.invest;
+  const t=document.getElementById('sTitle'); const editing=document.getElementById('sSave').getAttribute('onclick').indexOf("('')")<0;
+  if(t) t.textContent=editing?(inv?'Edit investment':'Edit spending'):(inv?'Record investment':'Add spending');
+  const dl=document.getElementById('sDescLbl'); if(dl) dl.textContent=inv?'What did you buy':'Description';
+  const dd=document.getElementById('sDesc'); if(dd && isNew) dd.placeholder=inv?'e.g. VTI shares':'e.g. Gas';
+  const sv=document.getElementById('sSave'); if(sv) sv.textContent=editing?'Save changes':(inv?'Record investment':'Add spending');
 }
 function saveSpend(id){
   const amt=parseFloat(String(document.getElementById('sAmt').value).replace(/[^0-9.]/g,''));
@@ -660,17 +732,17 @@ function saveSpend(id){
   else{db.tx.push({id:uid(),amount:amt,fundId:pickFund,date,desc,_o:Date.now()});}
   save();render();closeSheet();
   const f=fund(pickFund); const bal=f?balanceOf(f):0;
-  toast(bal<0 ? 'Saved — '+esc(f.name)+' is now overspent' : (id?'Updated':'Spending added'));
+  toast(bal<0 ? 'Saved — '+esc(f.name)+' is now overspent' : (id?'Updated':(f&&f.invest?'Invested '+fmt0(amt):'Spending added')));
 }
 function deleteSpend(id){db.tx=db.tx.filter(r=>r.id!==id);save();render();closeSheet();toast('Deleted');}
 
 /* ===================== FUND EDIT ===================== */
 const PALETTE=['#6a9b4f','#7cae5d','#7a9e8e','#4f8a6a','#c08a4e','#bd7a3e','#9c7b4e','#a86d52','#c2785a','#b5603f','#8a8f5a','#6f7d8a'];
-let fIcon='box',fColor='#6a9b4f';
+let fIcon='box',fColor='#6a9b4f',fInvest=false;
 function openFund(id){
   const ed=db.funds.find(f=>f.id===id);
   const f=ed||{name:'',alloc:0,icon:'box',color:'#6a9b4f',target:0};
-  fIcon=f.icon;fColor=f.color;
+  fIcon=f.icon;fColor=f.color;fInvest=!!f.invest;
   const sh=document.getElementById('sheet');
   sh.innerHTML=`<div class="grab"></div><h2>${ed?'Edit fund':'New fund'}</h2>
     <div class="field"><label>Name</label><input id="fName" placeholder="e.g. Vacation" value="${esc(f.name)}"></div>
@@ -679,11 +751,22 @@ function openFund(id){
       <div class="field"><label>Goal target (optional)</label><input id="fTarget" inputmode="decimal" placeholder="$0 = none" value="${f.target?f.target:''}"></div>
     </div>
     <div class="note" style="margin:-6px 0 15px;font-size:12px">Changing the % only applies to <b>future</b> income — past paychecks keep the split they were saved with.</div>
+    <div class="field"><label>Investment fund</label>
+      <button class="chip btn-block" id="fInvestChip" style="text-align:left;display:flex;align-items:center;gap:10px" onclick="fInvest=!fInvest;renderInvestChip()">
+        <span style="width:20px;height:20px" id="fInvestIco"></span><span id="fInvestTxt"></span></button>
+      <div class="note" style="font-size:11.5px;margin-top:7px">When on, money you spend from this fund is tracked as <b>total invested</b> (how much you’ve actually put in).</div>
+    </div>
     <div class="field"><label>Icon</label><div class="icon-pick" id="fIconPick"></div></div>
     <div class="field"><label>Color</label><div class="color-pick" id="fColorPick"></div></div>
     <button class="btn btn-pri btn-block" onclick="saveFund('${ed?id:''}')">${ed?'Save changes':'Add fund'}</button>
     ${ed?`<button class="btn btn-danger btn-block" onclick="deleteFund('${id}')" style="margin-top:10px">Delete fund</button>`:''}`;
-  renderIconPick();renderColorPick();openSheet();
+  renderIconPick();renderColorPick();renderInvestChip();openSheet();
+}
+function renderInvestChip(){
+  const chip=document.getElementById('fInvestChip');
+  chip.classList.toggle('on',fInvest);
+  document.getElementById('fInvestIco').innerHTML=svgIc(fInvest?'trending':'box');
+  document.getElementById('fInvestTxt').textContent=fInvest?'On — tracking total invested':'Off';
 }
 const PICK_ICONS=['heart','shield','trending','car','cart','gift','ring','home','bank','wallet','briefcase','fuel','utensils','bolt','tools','plane','dumbbell','phone','coffee','mountain','tree','leaf','dollar','music','shirt','fire','compass','tent','droplet','star','book','box','paw','coins'];
 function renderIconPick(){
@@ -699,8 +782,8 @@ function saveFund(id){
   if(!name){toast('Name the fund');return;}
   const alloc=(parseFloat(String(document.getElementById('fAlloc').value).replace(/[^0-9.]/g,''))||0)/100;
   const target=parseFloat(String(document.getElementById('fTarget').value).replace(/[^0-9.]/g,''))||0;
-  if(id){Object.assign(fund(id),{name,alloc,target,icon:fIcon,color:fColor});}
-  else{db.funds.push({id:uid(),name,alloc,target,icon:fIcon,color:fColor});}
+  if(id){Object.assign(fund(id),{name,alloc,target,icon:fIcon,color:fColor,invest:fInvest});}
+  else{db.funds.push({id:uid(),name,alloc,target,icon:fIcon,color:fColor,invest:fInvest});}
   save();render();closeSheet();toast('Fund saved');
 }
 function deleteFund(id){
@@ -747,7 +830,7 @@ function resetFunds(){
 function wipeAll(){
   if(!confirm('Erase ALL data on this device? Consider downloading a backup first.'))return;
   if(!confirm('Really erase everything?'))return;
-  db={funds:structuredClone(DEFAULT_FUNDS),income:[],tx:[]};save();render();go('dash');toast('All data erased');
+  db={funds:structuredClone(DEFAULT_FUNDS),income:[],tx:[],transfers:[]};save();render();go('dash');toast('All data erased');
 }
 
 /* ===================== EVENTS ===================== */
