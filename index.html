@@ -41,8 +41,8 @@
 
   header{
     position:sticky;top:0;z-index:20;
-    background:linear-gradient(180deg,var(--bg) 72%,rgba(14,19,17,0));
-    padding:calc(16px + var(--safe-t)) 18px 10px;
+    background:var(--bg);border-bottom:1px solid transparent;
+    padding:calc(16px + var(--safe-t)) 18px 11px;
   }
   .h-row{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
   .h-title{font-size:23px;font-weight:800;letter-spacing:-.4px}
@@ -145,9 +145,17 @@
   .sheet{position:fixed;left:0;right:0;bottom:0;z-index:41;background:var(--bg2);
     border-radius:24px 24px 0 0;border-top:1px solid var(--line2);
     transform:translateY(100%);transition:transform .27s cubic-bezier(.2,.8,.2,1);
-    max-height:93vh;overflow-y:auto;padding:8px 18px calc(26px + var(--safe-b));max-width:700px;margin:0 auto}
+    display:flex;flex-direction:column;
+    max-height:calc(100dvh - var(--safe-t) - 12px);
+    max-width:700px;margin:0 auto;will-change:transform}
   .sheet.show{transform:translateY(0)}
-  .grab{width:42px;height:5px;border-radius:3px;background:var(--line2);margin:8px auto 16px}
+  .sheet-head{position:relative;flex:0 0 auto;padding:9px 18px 4px;touch-action:none;cursor:grab}
+  .grab{display:block;width:44px;height:5px;border-radius:3px;background:var(--line2);margin:4px auto 2px}
+  .sheet-x{position:absolute;right:13px;top:8px;width:36px;height:36px;border-radius:50%;
+    background:var(--card2);border:1px solid var(--line);color:var(--muted);
+    font-size:16px;line-height:1;display:flex;align-items:center;justify-content:center}
+  .sheet-x:active{transform:scale(.9)}
+  .sheet-body{flex:1 1 auto;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:2px 18px calc(26px + var(--safe-b))}
   .sheet h2{font-size:20px;margin-bottom:16px}
 
   .field{margin-bottom:15px}
@@ -306,7 +314,13 @@
 <nav id="nav"></nav>
 
 <div class="scrim" id="scrim" onclick="closeSheet()"></div>
-<div class="sheet" id="sheet"></div>
+<div class="sheet" id="sheet">
+  <div class="sheet-head" id="sheetHead">
+    <span class="grab"></span>
+    <button class="sheet-x" onclick="closeSheet()" aria-label="Close">✕</button>
+  </div>
+  <div class="sheet-body" id="sheetBody"></div>
+</div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -580,8 +594,8 @@ function go(v){
 
 /* ===================== ADD (choose) ===================== */
 function openAdd(){
-  const sh=document.getElementById('sheet');
-  sh.innerHTML=`<div class="grab"></div><h2>Add</h2>
+  const sh=document.getElementById('sheetBody');
+  sh.innerHTML=`<h2>Add</h2>
     <div class="seg" style="margin-bottom:10px">
       <button class="btn btn-block" style="flex-direction:column;gap:9px;padding:18px 10px" onclick="openIncome()">
         <span style="width:28px;height:28px;color:var(--pine-2)">${svgIc('arrowdown')}</span><b>Income</b><small class="faint" style="font-weight:600">I got paid</small></button>
@@ -601,8 +615,8 @@ function openTransfer(id){
   const r=ed||{fromId:(fs.find(f=>f.id==='spending')||fs[0]||{}).id, toId:(fs.find(f=>f.id==='emergency')||fs[1]||fs[0]||{}).id, amount:'', date:todayISO(), note:''};
   if(r.fromId===r.toId && fs.length>1) r.toId=fs.find(f=>f.id!==r.fromId).id;
   xFrom=r.fromId; xTo=r.toId;
-  const sh=document.getElementById('sheet');
-  sh.innerHTML=`<div class="grab"></div><h2>${ed?'Edit transfer':'Transfer'}</h2>
+  const sh=document.getElementById('sheetBody');
+  sh.innerHTML=`<h2>${ed?'Edit transfer':'Transfer'}</h2>
     <div class="field"><input class="amount-in" id="xAmt" inputmode="decimal" placeholder="$0.00" value="${r.amount!==''?r.amount:''}" oninput="renderXfer()"></div>
     <div class="field"><label>From</label><div class="fundpick" id="xFromPick"></div></div>
     <div style="text-align:center;color:var(--fog);margin:-4px 0 12px"><span style="display:inline-block;width:22px;height:22px">${svgIc('arrowdown')}</span></div>
@@ -652,8 +666,8 @@ function openIncome(id){
   }else{
     incProps={}; db.funds.forEach(f=>incProps[f.id]=f.alloc||0);
   }
-  const sh=document.getElementById('sheet');
-  sh.innerHTML=`<div class="grab"></div><h2>${ed?'Edit income':'Add income'}</h2>
+  const sh=document.getElementById('sheetBody');
+  sh.innerHTML=`<h2>${ed?'Edit income':'Add income'}</h2>
     <div class="field"><input class="amount-in" id="iAmt" inputmode="decimal" placeholder="$0.00" value="${r.amount!==''?r.amount:''}" oninput="renderSplit()"></div>
     <div class="row2">
       <div class="field"><label>Source</label><input id="iSrc" placeholder="e.g. Paycheck" value="${esc(r.source||'')}"></div>
@@ -697,7 +711,7 @@ function openSpend(id){
   const ed=db.tx.find(r=>r.id===id);
   const r=ed||{fundId:(db.funds.find(f=>f.id==='spending')||db.funds[0]||{}).id,amount:'',desc:'',date:todayISO()};
   pickFund=r.fundId;
-  const sh=document.getElementById('sheet');
+  const sh=document.getElementById('sheetBody');
   sh.innerHTML=`<div class="grab"></div><h2 id="sTitle">${ed?'Edit spending':'Add spending'}</h2>
     <div class="field"><input class="amount-in" id="sAmt" inputmode="decimal" placeholder="$0.00" value="${r.amount!==''?r.amount:''}"></div>
     <div class="field"><label id="sFundLbl">From which fund</label><div class="fundpick" id="sFundPick"></div></div>
@@ -743,8 +757,8 @@ function openFund(id){
   const ed=db.funds.find(f=>f.id===id);
   const f=ed||{name:'',alloc:0,icon:'box',color:'#6a9b4f',target:0};
   fIcon=f.icon;fColor=f.color;fInvest=!!f.invest;
-  const sh=document.getElementById('sheet');
-  sh.innerHTML=`<div class="grab"></div><h2>${ed?'Edit fund':'New fund'}</h2>
+  const sh=document.getElementById('sheetBody');
+  sh.innerHTML=`<h2>${ed?'Edit fund':'New fund'}</h2>
     <div class="field"><label>Name</label><input id="fName" placeholder="e.g. Vacation" value="${esc(f.name)}"></div>
     <div class="row2">
       <div class="field"><label>Allocation %</label><input id="fAlloc" inputmode="decimal" placeholder="0" value="${Math.round((f.alloc||0)*100*100)/100||''}"></div>
@@ -792,8 +806,32 @@ function deleteFund(id){
 }
 
 /* ===================== SHEET ===================== */
-function openSheet(){document.getElementById('scrim').classList.add('show');document.getElementById('sheet').classList.add('show');}
-function closeSheet(){document.getElementById('scrim').classList.remove('show');document.getElementById('sheet').classList.remove('show');}
+function openSheet(){
+  const s=document.getElementById('sheet');
+  s.style.transition=''; s.style.transform='';
+  document.getElementById('sheetBody').scrollTop=0;
+  document.getElementById('scrim').classList.add('show');
+  s.classList.add('show');
+}
+function closeSheet(){
+  const s=document.getElementById('sheet');
+  s.style.transform='';              // hand control back to CSS (slides down)
+  document.getElementById('scrim').classList.remove('show');
+  s.classList.remove('show');
+}
+// Swipe-down-to-close on the sheet header
+(function(){
+  let startY=0,dy=0,drag=false;
+  const head=()=>document.getElementById('sheetHead'), sheet=()=>document.getElementById('sheet');
+  function down(e){drag=true;startY=(e.touches?e.touches[0].clientY:e.clientY);dy=0;sheet().style.transition='none';}
+  function move(e){if(!drag)return;const y=(e.touches?e.touches[0].clientY:e.clientY);dy=Math.max(0,y-startY);sheet().style.transform='translateY('+dy+'px)';}
+  function up(){if(!drag)return;drag=false;sheet().style.transition='';if(dy>100){closeSheet();}else{sheet().style.transform='';}dy=0;}
+  const h=head();
+  if(h){
+    h.addEventListener('touchstart',down,{passive:true}); h.addEventListener('touchmove',move,{passive:true}); h.addEventListener('touchend',up);
+    h.addEventListener('mousedown',down); window.addEventListener('mousemove',move); window.addEventListener('mouseup',up);
+  }
+})();
 
 /* ===================== UTIL ===================== */
 function esc(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
