@@ -1,5 +1,5 @@
 /* Budget PWA service worker — offline caching */
-const CACHE = 'ledger-v3';
+const CACHE = 'ledger-v4';
 const ASSETS = [
   './',
   './index.html',

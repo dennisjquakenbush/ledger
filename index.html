@@ -376,8 +376,14 @@ const DEFAULT_FUNDS=[
 
 let db=load();
 function load(){
-  try{const raw=localStorage.getItem(KEY); if(raw){const d=JSON.parse(raw); if(d.funds) return d;}}catch(e){}
+  try{const raw=localStorage.getItem(KEY); if(raw){const d=JSON.parse(raw); if(d.funds){migrate(d);return d;}}}catch(e){}
   return {funds:structuredClone(DEFAULT_FUNDS), income:[], tx:[]};
+}
+// Older income may predate frozen splits — snapshot it from current allocations once.
+function migrate(d){
+  (d.income||[]).forEach(r=>{
+    if(!r.split){r.split={}; (d.funds||[]).forEach(f=>{r.split[f.id]=r.amount*(f.alloc||0);});}
+  });
 }
 function save(){localStorage.setItem(KEY,JSON.stringify(db));}
 
@@ -387,7 +393,8 @@ let period='all', txFilter='all', curView='dash';
 const fund=(id)=>db.funds.find(f=>f.id===id);
 function totalIncome(){return db.income.reduce((s,r)=>s+r.amount,0);}
 function totalSpent(){return db.tx.reduce((s,r)=>s+r.amount,0);}
-function allocated(f){return totalIncome()*(f.alloc||0);}
+// Allocated = sum of each past deposit's FROZEN split to this fund (not affected by % changes).
+function allocated(f){return db.income.reduce((s,r)=>s+((r.split&&r.split[f.id]!=null)?r.split[f.id]:0),0);}
 function spentOf(id){return db.tx.filter(t=>t.fundId===id).reduce((s,t)=>s+t.amount,0);}
 function balanceOf(f){return allocated(f)-spentOf(f.id);}
 function totalBalance(){return totalIncome()-totalSpent();}
@@ -416,7 +423,7 @@ function renderDash(){
 
   // funds
   const wrap=document.getElementById('fundsList');
-  document.getElementById('fundsTotal').textContent=fmt(totalBalance())+' across funds';
+  document.getElementById('fundsTotal').textContent=fmt(db.funds.reduce((s,f)=>s+balanceOf(f),0))+' across funds';
   wrap.innerHTML=db.funds.map(f=>{
     const bal=balanceOf(f), alc=allocated(f), sp=spentOf(f.id);
     const pct = alc>0 ? Math.min(100,Math.max(0,bal/alc*100)) : 0;
@@ -569,9 +576,17 @@ function openAdd(){
 }
 
 /* ===================== INCOME ===================== */
+// Proportions used for the split preview: current allocations for new income,
+// or the deposit's own frozen proportions when editing.
+let incProps={};
 function openIncome(id){
   const ed=db.income.find(r=>r.id===id);
   const r=ed||{source:'',amount:'',date:todayISO()};
+  if(ed && ed.split && ed.amount>0){
+    incProps=Object.fromEntries(Object.entries(ed.split).map(([k,v])=>[k,v/ed.amount]));
+  }else{
+    incProps={}; db.funds.forEach(f=>incProps[f.id]=f.alloc||0);
+  }
   const sh=document.getElementById('sheet');
   sh.innerHTML=`<div class="grab"></div><h2>${ed?'Edit income':'Add income'}</h2>
     <div class="field"><input class="amount-in" id="iAmt" inputmode="decimal" placeholder="$0.00" value="${r.amount!==''?r.amount:''}" oninput="renderSplit()"></div>
@@ -579,7 +594,8 @@ function openIncome(id){
       <div class="field"><label>Source</label><input id="iSrc" placeholder="e.g. Paycheck" value="${esc(r.source||'')}"></div>
       <div class="field"><label>Date</label><input type="date" id="iDate" value="${r.date}"></div>
     </div>
-    <div class="field"><label>How it splits</label><div class="alloc-list" id="iSplit"></div></div>
+    <div class="field"><label>How it splits</label><div class="alloc-list" id="iSplit"></div>
+      <div class="note" style="margin-top:8px;font-size:12px">${ed?'Locked to this deposit — editing the % later won’t change it.':'Frozen the moment you save — later % changes only affect future income.'}</div></div>
     <button class="btn btn-pri btn-block" onclick="saveIncome('${ed?id:''}')">${ed?'Save changes':'Add income'}</button>
     ${ed?`<button class="btn btn-danger btn-block" onclick="deleteIncome('${id}')" style="margin-top:10px">Delete</button>`:''}`;
   renderSplit(); openSheet();
@@ -587,16 +603,25 @@ function openIncome(id){
 }
 function renderSplit(){
   const amt=parseFloat(String(document.getElementById('iAmt').value).replace(/[^0-9.]/g,''))||0;
-  document.getElementById('iSplit').innerHTML=db.funds.map(f=>
-    `<div class="alloc-line"><span>${esc(f.name)} <span class="faint">${Math.round((f.alloc||0)*100)}%</span></span><b class="tnum">${fmt(amt*(f.alloc||0))}</b></div>`).join('');
+  document.getElementById('iSplit').innerHTML=db.funds.map(f=>{
+    const frac=(f.id in incProps)?incProps[f.id]:(f.alloc||0);
+    return `<div class="alloc-line"><span>${esc(f.name)} <span class="faint">${Math.round(frac*100)}%</span></span><b class="tnum">${fmt(amt*frac)}</b></div>`;
+  }).join('');
 }
 function saveIncome(id){
   const amt=parseFloat(String(document.getElementById('iAmt').value).replace(/[^0-9.]/g,''));
   if(!amt||amt<=0){toast('Enter an amount');return;}
   const source=document.getElementById('iSrc').value.trim()||'Income';
   const date=document.getElementById('iDate').value||todayISO();
-  if(id){Object.assign(db.income.find(r=>r.id===id),{amount:amt,source,date});}
-  else{db.income.push({id:uid(),amount:amt,source,date,_o:Date.now()});}
+  if(id){
+    // Preserve this deposit's frozen proportions, just rescale to the new amount.
+    const split={}; Object.keys(incProps).forEach(fid=>split[fid]=amt*incProps[fid]);
+    Object.assign(db.income.find(r=>r.id===id),{amount:amt,source,date,split});
+  }else{
+    // Snapshot current allocations as fixed dollar amounts for this deposit.
+    const split={}; db.funds.forEach(f=>split[f.id]=amt*(f.alloc||0));
+    db.income.push({id:uid(),amount:amt,source,date,split,_o:Date.now()});
+  }
   save();render();closeSheet();toast(id?'Updated':'Income added — split across funds');
 }
 function deleteIncome(id){db.income=db.income.filter(r=>r.id!==id);save();render();closeSheet();toast('Deleted');}
@@ -653,6 +678,7 @@ function openFund(id){
       <div class="field"><label>Allocation %</label><input id="fAlloc" inputmode="decimal" placeholder="0" value="${Math.round((f.alloc||0)*100*100)/100||''}"></div>
       <div class="field"><label>Goal target (optional)</label><input id="fTarget" inputmode="decimal" placeholder="$0 = none" value="${f.target?f.target:''}"></div>
     </div>
+    <div class="note" style="margin:-6px 0 15px;font-size:12px">Changing the % only applies to <b>future</b> income — past paychecks keep the split they were saved with.</div>
     <div class="field"><label>Icon</label><div class="icon-pick" id="fIconPick"></div></div>
     <div class="field"><label>Color</label><div class="color-pick" id="fColorPick"></div></div>
     <button class="btn btn-pri btn-block" onclick="saveFund('${ed?id:''}')">${ed?'Save changes':'Add fund'}</button>
