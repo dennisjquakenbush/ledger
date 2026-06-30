@@ -9,6 +9,9 @@
 <title>Ledger</title>
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="apple-touch-icon" href="icon-192.png" />
+<script defer src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+<script defer src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+<script defer src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
 <style>
   :root{
     --bg:#0e1311; --bg2:#121815; --card:#161e18; --card2:#1d271f;
@@ -92,6 +95,9 @@
   .pill.warn{background:var(--clay-d);color:var(--clay)}
   .pill.ok{background:var(--pine-d);color:var(--pine-2)}
   .pill.invest{background:#1d2e2a;color:#8fc0b0}
+  .synccode{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:21px;font-weight:800;letter-spacing:1px;
+    background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:15px;text-align:center;margin-top:10px}
+  .synccode:active{transform:scale(.99)}
 
   /* GOALS */
   .goal{background:var(--card2);border:1px solid var(--line);border-radius:var(--r2);padding:15px;margin-bottom:11px}
@@ -126,6 +132,8 @@
   .btn-sm{padding:9px 12px;font-size:13px;border-radius:10px}
   .btn-block{width:100%}
   .ico-sm{width:17px;height:17px}
+  .ic-sm{width:18px;height:18px;display:inline-flex;flex:0 0 auto}
+  .ic-sm svg,svg.ic-sm{width:18px;height:18px}
 
   nav{position:fixed;left:0;right:0;bottom:0;z-index:30;
     background:rgba(16,21,18,.93);backdrop-filter:blur(16px);
@@ -291,6 +299,7 @@
 
   <!-- MORE -->
   <section id="view-set" class="hide">
+    <div class="card" id="syncCard"></div>
     <div class="card">
       <div class="card-h"><h2>Backup &amp; restore</h2></div>
       <p class="note" style="margin-top:0">Your data lives on this device only. Back it up to a file, then restore it on your phone (or any device) to carry everything over.</p>
@@ -405,10 +414,13 @@ function migrate(d){
   if(!d.transfers) d.transfers=[];           // transfers added later
 }
 let saveWarned=false;
-function save(){
-  try{ localStorage.setItem(KEY,JSON.stringify(db)); }
-  catch(e){ if(!saveWarned){saveWarned=true; toast('⚠️ Couldn’t save — storage blocked or full. Use More → Backup.');} }
+function persistLocal(){
+  try{ localStorage.setItem(KEY,JSON.stringify(db)); return true; }
+  catch(e){ if(!saveWarned){saveWarned=true; toast('⚠️ Couldn’t save — storage blocked or full. Use More → Backup.');} return false; }
 }
+function localUpdatedAt(){return +localStorage.getItem('ledger.u')||0;}
+function setUpdatedAt(t){try{localStorage.setItem('ledger.u',String(t));}catch(e){}}
+function save(){ setUpdatedAt(Date.now()); persistLocal(); schedulePush(); }
 
 let period='all', txFilter='all', curView='dash';
 
@@ -906,8 +918,116 @@ if(navigator.storage&&navigator.storage.persist){ navigator.storage.persist().ca
 window.addEventListener('pagehide',()=>{try{localStorage.setItem(KEY,JSON.stringify(db));}catch(e){}});
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden'){ try{localStorage.setItem(KEY,JSON.stringify(db));}catch(e){} } });
 
+/* ===================== CLOUD SYNC (Firebase) ===================== */
+const FIREBASE_CONFIG={
+  apiKey:"AIzaSyD_muJhbq93z8RStp1dQrepvzcQgHPGDk8",
+  authDomain:"ledger-sync-b26db.firebaseapp.com",
+  projectId:"ledger-sync-b26db",
+  storageBucket:"ledger-sync-b26db.firebasestorage.app",
+  messagingSenderId:"95720651205",
+  appId:"1:95720651205:web:8c8855837aa0e83bcbf3ac"
+};
+let fdb=null, fAuthReady=false, syncUnsub=null, pushTimer=null, syncStatus='off', adopting=false;
+function syncMeta(){try{return JSON.parse(localStorage.getItem('ledger.sync'))||{};}catch(e){return {};}}
+function setSyncMeta(m){try{localStorage.setItem('ledger.sync',JSON.stringify(m));}catch(e){}}
+
+function initSync(){
+  if(typeof firebase==='undefined'||!FIREBASE_CONFIG){ renderSyncCard(); return; }
+  try{ if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG); fdb=firebase.firestore(); }
+  catch(e){ renderSyncCard(); return; }
+  firebase.auth().onAuthStateChanged(u=>{
+    fAuthReady=!!u;
+    const m=syncMeta();
+    if(u && m.on && m.code) startSync(m.code);
+    renderSyncCard();
+  });
+  firebase.auth().signInAnonymously().catch(()=>{ setStatus('error'); });
+  renderSyncCard();
+}
+function startSync(code){
+  if(!fdb) return;
+  setSyncMeta({on:true,code});
+  if(syncUnsub){syncUnsub(); syncUnsub=null;}
+  setStatus('connecting');
+  syncUnsub=fdb.collection('ledgers').doc(code).onSnapshot(snap=>{
+    if(!snap.exists){ pushNow(code); return; }
+    const d=snap.data()||{}; const remoteT=d.updatedAt||0;
+    if(remoteT>localUpdatedAt() && d.data){
+      try{ const inc=JSON.parse(d.data);
+        if(inc&&inc.funds){ adopting=true; db=inc; migrate(db); setUpdatedAt(remoteT); persistLocal(); render(); adopting=false; }
+      }catch(e){}
+    }
+    setStatus('synced');
+  }, ()=>setStatus('error'));
+}
+function schedulePush(){
+  if(adopting) return;                       // don't echo a change we just pulled
+  const m=syncMeta(); if(!m.on||!m.code||!fdb||!fAuthReady) return;
+  setStatus('syncing'); clearTimeout(pushTimer);
+  pushTimer=setTimeout(()=>pushNow(m.code),900);
+}
+function pushNow(code){
+  if(!fdb||!fAuthReady) return;
+  fdb.collection('ledgers').doc(code).set({data:JSON.stringify(db),updatedAt:localUpdatedAt()||Date.now()},{merge:true})
+    .then(()=>setStatus('synced')).catch(()=>setStatus('error'));
+}
+function setStatus(s){ syncStatus=s; renderSyncCard(); }
+function genCode(){
+  const a=new Uint8Array(6); (window.crypto||{}).getRandomValues? crypto.getRandomValues(a):a.forEach((_,i)=>a[i]=Math.floor(Math.random()*256));
+  const s=Array.from(a,b=>('0'+b.toString(16)).slice(-2)).join('');
+  return s.replace(/(.{4})(.{4})(.{4})/,'$1-$2-$3');
+}
+function turnOnSync(){
+  if(!fdb){toast('Sync unavailable — check your connection');return;}
+  const code=genCode(); setUpdatedAt(Date.now()); setSyncMeta({on:true,code});
+  if(fAuthReady){ startSync(code); pushNow(code); } else setStatus('connecting');
+  renderSyncCard(); toast('Cloud sync is on');
+}
+function disconnectSync(){
+  if(!confirm('Turn off sync on this device? Your data stays here, it just stops syncing.'))return;
+  if(syncUnsub){syncUnsub();syncUnsub=null;}
+  setSyncMeta({on:false,code:null}); setStatus('off'); toast('Sync turned off');
+}
+function openJoin(){
+  const sh=document.getElementById('sheetBody');
+  sh.innerHTML=`<h2>Connect to a code</h2>
+    <p class="note" style="margin-top:-6px">Enter the sync code from your other device. <b>This device’s current data will be replaced</b> with that synced data.</p>
+    <div class="field"><label>Sync code</label><input id="joinCode" placeholder="xxxx-xxxx-xxxx" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="latin"></div>
+    <button class="btn btn-pri btn-block" onclick="doJoin()">Connect &amp; sync</button>`;
+  openSheet(); setTimeout(()=>document.getElementById('joinCode').focus(),300);
+}
+function doJoin(){
+  const code=(document.getElementById('joinCode').value||'').trim().toLowerCase().replace(/\s/g,'');
+  if(!/^[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}$/.test(code)){toast('Enter the full code like xxxx-xxxx-xxxx');return;}
+  if(!fdb||!fAuthReady){toast('Sync not ready — check your connection');return;}
+  setUpdatedAt(0); setSyncMeta({on:true,code}); startSync(code);
+  closeSheet(); toast('Connecting…');
+}
+function copyCode(c){ if(navigator.clipboard){navigator.clipboard.writeText(c).then(()=>toast('Code copied')).catch(()=>toast(c));} else toast(c); }
+function renderSyncCard(){
+  const el=document.getElementById('syncCard'); if(!el) return;
+  const m=syncMeta();
+  if(typeof firebase==='undefined'||!fdb){
+    el.innerHTML=`<div class="card-h"><h2>Cloud sync</h2><span class="pill" style="background:var(--card2);color:var(--faint)">Offline</span></div>
+      <p class="note" style="margin:0">Connect to the internet to set up syncing across devices.</p>`; return;
+  }
+  if(!m.on){
+    el.innerHTML=`<div class="card-h"><h2>Cloud sync</h2><span class="pill" style="background:var(--card2);color:var(--faint)">Off</span></div>
+      <p class="note" style="margin-top:0">Keep your phone and computer in sync — no login, just a code.</p>
+      <button class="btn btn-pri btn-block" onclick="turnOnSync()" style="margin-bottom:10px">Turn on sync</button>
+      <button class="btn btn-block" onclick="openJoin()">Connect to an existing code</button>`; return;
+  }
+  const txt={off:'Off',connecting:'Connecting…',syncing:'Syncing…',synced:'Synced',error:'Offline · will retry'}[syncStatus]||'…';
+  const col=syncStatus==='synced'?'ok':(syncStatus==='error'?'warn':'alloc');
+  el.innerHTML=`<div class="card-h"><h2>Cloud sync</h2><span class="pill ${col}">${txt}</span></div>
+    <p class="note" style="margin-top:0">On your other device, open Ledger → <b>More → Connect to an existing code</b>, and enter:</p>
+    <div class="synccode" onclick="copyCode('${m.code}')">${m.code}<div class="faint" style="font-size:12px;font-weight:600;margin-top:4px;letter-spacing:0">tap to copy</div></div>
+    <button class="btn btn-block" onclick="disconnectSync()" style="margin-top:12px">Turn off sync on this device</button>`;
+}
+
 /* ===================== INIT ===================== */
 render();go('dash');
+window.addEventListener('load',initSync);
 if('serviceWorker' in navigator){navigator.serviceWorker.register('sw.js').catch(()=>{});}
 </script>
 </body>
